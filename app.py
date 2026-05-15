@@ -23,11 +23,8 @@ from festa_logic import (
 from stock_list import (
     DEFAULT_STOCKS,
     get_top_volume_stocks,
-    load_watchlist, add_to_watchlist, remove_from_watchlist,
+    load_watchlist,
     normalize_ticker, search_stock_by_name,
-)
-from portfolio import (
-    load_portfolio, add_position, remove_position
 )
 
 # ============================================================
@@ -131,11 +128,9 @@ st.sidebar.markdown("---")
 mode = st.sidebar.radio(
     "분석 모드",
     [
-        "📊 단일 종목 분석",
         "🔥 거래대금 상위 스크리닝",
-        "⭐ 관심종목",
         "🔍 종목 검색",
-        "💼 내 포트폴리오",
+        "📊 단일 종목 분석",
         "📖 가이드",
     ]
 )
@@ -350,9 +345,121 @@ def render_analysis_result(res: dict, display_name: str):
 
 
 # ============================================================
-# [모드 1] 단일 종목 분석 (다중 기간 비교)
+# [모드 1] 거래대금 상위 자동 스크리닝
 # ============================================================
-if mode == "📊 단일 종목 분석":
+if mode == "🔥 거래대금 상위 스크리닝":
+    st.title("🔥 거래대금 상위 스크리닝")
+    st.caption("💡 시장 관심 = 주도주 (테스타 철학)")
+
+    if is_mobile():
+        market = st.selectbox("시장", ["KOSPI", "KOSDAQ", "둘 다"])
+        top_n = st.number_input("상위 N개", min_value=10, max_value=100, value=20, step=10)
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            market = st.selectbox("시장", ["KOSPI", "KOSDAQ", "둘 다"])
+        with col2:
+            top_n = st.number_input("상위 N개", min_value=10, max_value=100, value=30, step=10)
+
+    if st.button("🚀 스크리닝 실행", type="primary", use_container_width=True):
+        with st.spinner("거래대금 상위 종목 가져오는 중..."):
+            top_stocks = {}
+            if market in ["KOSPI", "둘 다"]:
+                top_stocks.update(get_top_volume_stocks("KOSPI", top_n))
+            if market in ["KOSDAQ", "둘 다"]:
+                top_stocks.update(get_top_volume_stocks("KOSDAQ", top_n))
+
+        if not top_stocks:
+            st.error("❌ 종목 추출 실패. 'pip install -U finance-datareader' 실행")
+        else:
+            st.success(f"✅ {len(top_stocks)}개 분석 시작...")
+            progress = st.progress(0)
+            status_text = st.empty()
+            results = []
+            today_signals = []
+
+            for idx, (name, code) in enumerate(top_stocks.items()):
+                status_text.text(f"({idx+1}/{len(top_stocks)}) {name}")
+                progress.progress((idx + 1) / len(top_stocks))
+                res = analyze(code, period=period, vol_mult=vol_mult,
+                              lookback_low=lookback, risk_reward=risk_reward,
+                              trail_pct=trail_pct)
+                if not res['success']:
+                    continue
+                row = {
+                    '종목명': name, '티커': code,
+                    '현재가': res['last_close'],
+                    '상태': res['status'],
+                }
+                if res['plan']:
+                    row.update({
+                        '신호일': res['plan'].get('신호일'),
+                        '경과일': res['plan'].get('경과일수'),
+                        '손절가': res['plan'].get('손절가'),
+                        '익절가': res['plan'].get('익절가'),
+                    })
+                results.append(row)
+                if res.get('is_today_signal'):
+                    today_signals.append(row)
+
+            status_text.empty()
+            progress.empty()
+
+            df_result = pd.DataFrame(results)
+            if df_result.empty:
+                st.error("분석 결과 없음")
+            else:
+                st.markdown(f"## 🟢 오늘 매수신호 ({len(today_signals)}개)")
+                if today_signals:
+                    st.dataframe(pd.DataFrame(today_signals), use_container_width=True, height=300)
+                    st.success("☝️ 종가 진입 가능!")
+                else:
+                    st.info("오늘 매수신호 종목 없음")
+
+                watch = df_result[df_result['상태'].str.contains('관망')]
+                st.markdown(f"### 🟡 관망 ({len(watch)}개)")
+                if not watch.empty:
+                    st.dataframe(watch, use_container_width=True, height=250)
+
+                with st.expander("📋 전체 결과"):
+                    st.dataframe(df_result, use_container_width=True)
+
+
+# ============================================================
+# [모드 2] 종목 검색
+# ============================================================
+elif mode == "🔍 종목 검색":
+    st.title("🔍 종목 검색")
+    keyword = st.text_input("종목명 키워드", placeholder="예: 삼성, 한미")
+
+    if keyword:
+        with st.spinner("검색 중..."):
+            results = search_stock_by_name(keyword)
+
+        if not results:
+            st.warning("검색 결과 없음")
+        else:
+            st.markdown(f"### 결과 ({len(results)}개)")
+            for name, ticker, market in results:
+                with st.container():
+                    st.markdown(f"**{name}** ({ticker}) - {market}")
+                    cols = st.columns(2)
+                    if cols[1].button("📊 분석", key=f"ana_{ticker}", use_container_width=True):
+                        with st.spinner(f"{name} 분석 중..."):
+                            res = analyze(ticker, period=period, vol_mult=vol_mult,
+                                          lookback_low=lookback, risk_reward=risk_reward,
+                                          trail_pct=trail_pct)
+                        if res['success']:
+                            render_analysis_result(res, f"{name} ({ticker})")
+                        else:
+                            st.error(res['message'])
+                    st.markdown("---")
+
+
+# ============================================================
+# [모드 3] 단일 종목 분석 (다중 기간 비교)
+# ============================================================
+elif mode == "📊 단일 종목 분석":
     st.title("📊 FESTA 분석")
     st.caption(f"⏱️ 분석 기간: **{PERIOD_GUIDE.get(period, period)}**")
 
@@ -437,349 +544,9 @@ if mode == "📊 단일 종목 분석":
             else:
                 render_analysis_result(res, display_name)
 
-                # 매수 등록 폼
-                if res.get('is_today_signal') and res.get('plan'):
-                    st.markdown("---")
-                    st.markdown("### 📝 매수 후 등록 (테스타 3줄 기록)")
-                    with st.form("buy_record"):
-                        actual_buy_price = st.number_input(
-                            "실제 매수가 (원)",
-                            value=float(res['plan']['신호시점가']),
-                            step=100.0
-                        )
-                        quantity = st.number_input("수량", min_value=1, value=10, step=1)
-                        buy_date_input = st.date_input("매수일", value=datetime.now())
-                        reason = st.text_input("1️⃣ 사는 이유",
-                            value=f"FESTA 매수신호 - 5일선 눌림목 후 재돌파")
-                        exit_  = st.text_input("2️⃣ 팔 자리",
-                            value=f"손절가 {res['plan']['손절가']:,.0f}원 이탈")
-                        loss   = st.text_input("3️⃣ 최대 손실",
-                            value=f"{res['plan']['신호가기준_손실률']}%")
-
-                        if st.form_submit_button("💾 포트폴리오 추가", type="primary"):
-                            name_for_save = stock_name if stock_name != "직접 입력" else ticker
-                            add_position(
-                                name=name_for_save, ticker=ticker,
-                                buy_price=actual_buy_price, quantity=quantity,
-                                buy_date=buy_date_input.strftime('%Y-%m-%d'),
-                                reason=reason, exit_condition=exit_, max_loss=loss
-                            )
-                            st.success("✅ 포트폴리오 추가 완료!")
-
 
 # ============================================================
-# [모드 2] 거래대금 상위 자동 스크리닝
-# ============================================================
-elif mode == "🔥 거래대금 상위 스크리닝":
-    st.title("🔥 거래대금 상위 스크리닝")
-    st.caption("💡 시장 관심 = 주도주 (테스타 철학)")
-
-    if is_mobile():
-        market = st.selectbox("시장", ["KOSPI", "KOSDAQ", "둘 다"])
-        top_n = st.number_input("상위 N개", min_value=10, max_value=100, value=20, step=10)
-    else:
-        col1, col2 = st.columns(2)
-        with col1:
-            market = st.selectbox("시장", ["KOSPI", "KOSDAQ", "둘 다"])
-        with col2:
-            top_n = st.number_input("상위 N개", min_value=10, max_value=100, value=30, step=10)
-
-    if st.button("🚀 스크리닝 실행", type="primary", use_container_width=True):
-        with st.spinner("거래대금 상위 종목 가져오는 중..."):
-            top_stocks = {}
-            if market in ["KOSPI", "둘 다"]:
-                top_stocks.update(get_top_volume_stocks("KOSPI", top_n))
-            if market in ["KOSDAQ", "둘 다"]:
-                top_stocks.update(get_top_volume_stocks("KOSDAQ", top_n))
-
-        if not top_stocks:
-            st.error("❌ 종목 추출 실패. 'pip install -U finance-datareader' 실행")
-        else:
-            st.success(f"✅ {len(top_stocks)}개 분석 시작...")
-            progress = st.progress(0)
-            status_text = st.empty()
-            results = []
-            today_signals = []
-
-            for idx, (name, code) in enumerate(top_stocks.items()):
-                status_text.text(f"({idx+1}/{len(top_stocks)}) {name}")
-                progress.progress((idx + 1) / len(top_stocks))
-                res = analyze(code, period=period, vol_mult=vol_mult,
-                              lookback_low=lookback, risk_reward=risk_reward,
-                              trail_pct=trail_pct)
-                if not res['success']:
-                    continue
-                row = {
-                    '종목명': name, '티커': code,
-                    '현재가': res['last_close'],
-                    '상태': res['status'],
-                }
-                if res['plan']:
-                    row.update({
-                        '신호일': res['plan'].get('신호일'),
-                        '경과일': res['plan'].get('경과일수'),
-                        '손절가': res['plan'].get('손절가'),
-                        '익절가': res['plan'].get('익절가'),
-                    })
-                results.append(row)
-                if res.get('is_today_signal'):
-                    today_signals.append(row)
-
-            status_text.empty()
-            progress.empty()
-
-            df_result = pd.DataFrame(results)
-            if df_result.empty:
-                st.error("분석 결과 없음")
-            else:
-                st.markdown(f"## 🟢 오늘 매수신호 ({len(today_signals)}개)")
-                if today_signals:
-                    st.dataframe(pd.DataFrame(today_signals), use_container_width=True, height=300)
-                    st.success("☝️ 종가 진입 가능!")
-                else:
-                    st.info("오늘 매수신호 종목 없음")
-
-                watch = df_result[df_result['상태'].str.contains('관망')]
-                st.markdown(f"### 🟡 관망 ({len(watch)}개)")
-                if not watch.empty:
-                    st.dataframe(watch, use_container_width=True, height=250)
-
-                with st.expander("📋 전체 결과"):
-                    st.dataframe(df_result, use_container_width=True)
-
-
-# ============================================================
-# [모드 3] 관심종목 관리/분석
-# ============================================================
-elif mode == "⭐ 관심종목":
-    st.title("⭐ 관심종목")
-    tab1, tab2 = st.tabs(["📋 관리", "🔍 일괄 분석"])
-
-    with tab1:
-        st.markdown("### 추가")
-        new_name = st.text_input("종목명", placeholder="예: 한미반도체")
-        new_ticker = st.text_input("티커", placeholder="예: 042700")
-        if st.button("➕ 추가", use_container_width=True):
-            if new_name and new_ticker:
-                add_to_watchlist(new_name, new_ticker)
-                st.success(f"✅ '{new_name}' 추가")
-                st.rerun()
-            else:
-                st.warning("종목명과 티커 입력 필요")
-
-        st.markdown("### 현재 관심종목")
-        wl = load_watchlist()
-        if not wl:
-            st.info("관심종목 없음")
-        else:
-            for name, ticker in wl.items():
-                cols = st.columns([3, 2, 1])
-                cols[0].text(name)
-                cols[1].text(ticker)
-                if cols[2].button("🗑️", key=f"del_{name}"):
-                    remove_from_watchlist(name)
-                    st.rerun()
-
-    with tab2:
-        wl = load_watchlist()
-        if not wl:
-            st.info("관심종목 없음")
-        else:
-            if st.button("🚀 일괄 분석", type="primary", use_container_width=True):
-                progress = st.progress(0)
-                results = []
-                today_sigs = []
-                for idx, (name, code) in enumerate(wl.items()):
-                    progress.progress((idx + 1) / len(wl))
-                    res = analyze(code, period=period, vol_mult=vol_mult,
-                                  lookback_low=lookback, risk_reward=risk_reward,
-                                  trail_pct=trail_pct)
-                    if not res['success']:
-                        continue
-                    row = {
-                        '종목명': name, '티커': code,
-                        '현재가': res['last_close'], '상태': res['status'],
-                    }
-                    if res['plan']:
-                        row.update({
-                            '신호일': res['plan'].get('신호일'),
-                            '경과일': res['plan'].get('경과일수'),
-                            '손절가': res['plan'].get('손절가'),
-                        })
-                    results.append(row)
-                    if res.get('is_today_signal'):
-                        today_sigs.append(row)
-                progress.empty()
-
-                df_result = pd.DataFrame(results)
-                st.markdown(f"## 🟢 오늘 신호 ({len(today_sigs)}개)")
-                if today_sigs:
-                    st.dataframe(pd.DataFrame(today_sigs), use_container_width=True)
-                else:
-                    st.info("오늘 신호 종목 없음")
-
-                with st.expander("📋 전체"):
-                    st.dataframe(df_result, use_container_width=True)
-
-
-# ============================================================
-# [모드 4] 종목 검색
-# ============================================================
-elif mode == "🔍 종목 검색":
-    st.title("🔍 종목 검색")
-    keyword = st.text_input("종목명 키워드", placeholder="예: 삼성, 한미")
-
-    if keyword:
-        with st.spinner("검색 중..."):
-            results = search_stock_by_name(keyword)
-
-        if not results:
-            st.warning("검색 결과 없음")
-        else:
-            st.markdown(f"### 결과 ({len(results)}개)")
-            for name, ticker, market in results:
-                with st.container():
-                    st.markdown(f"**{name}** ({ticker}) - {market}")
-                    cols = st.columns(2)
-                    if cols[0].button("⭐ 관심추가", key=f"add_{ticker}", use_container_width=True):
-                        add_to_watchlist(name, ticker)
-                        st.success("추가됨")
-                    if cols[1].button("📊 분석", key=f"ana_{ticker}", use_container_width=True):
-                        with st.spinner(f"{name} 분석 중..."):
-                            res = analyze(ticker, period=period, vol_mult=vol_mult,
-                                          lookback_low=lookback, risk_reward=risk_reward,
-                                          trail_pct=trail_pct)
-                        if res['success']:
-                            render_analysis_result(res, f"{name} ({ticker})")
-                        else:
-                            st.error(res['message'])
-                    st.markdown("---")
-
-
-# ============================================================
-# [모드 5] 내 포트폴리오
-# ============================================================
-elif mode == "💼 내 포트폴리오":
-    st.title("💼 내 포트폴리오")
-    tab1, tab2 = st.tabs(["📊 보유 현황", "➕ 매수 추가"])
-
-    with tab1:
-        portfolio = load_portfolio()
-        if not portfolio:
-            st.info("매수 내역 없음")
-        else:
-            st.markdown(f"### 보유: {len(portfolio)}개")
-
-            total_invested = 0
-            total_current = 0
-            position_results = []
-
-            with st.spinner("실시간 평가 중..."):
-                for pos in portfolio:
-                    eval_res = evaluate_portfolio_position(
-                        ticker=pos['티커'],
-                        buy_price=pos['매수가'],
-                        quantity=pos['수량'],
-                        buy_date=pos['매수일'],
-                        period=period,
-                        trail_pct=trail_pct
-                    )
-                    if eval_res['success']:
-                        total_invested += eval_res['투자금']
-                        total_current  += eval_res['평가금']
-                        position_results.append((pos, eval_res))
-
-            st.markdown("### 💰 전체 요약")
-            total_pl = total_current - total_invested
-            total_pl_pct = (total_pl / total_invested * 100) if total_invested > 0 else 0
-            if is_mobile():
-                st.metric("총 투자금", f"{total_invested:,.0f}원")
-                st.metric("현재 평가금", f"{total_current:,.0f}원")
-                st.metric("총 손익", f"{total_pl:,.0f}원", f"{total_pl_pct:+.2f}%")
-            else:
-                c1, c2, c3 = st.columns(3)
-                c1.metric("투자금", f"{total_invested:,.0f}원")
-                c2.metric("평가금", f"{total_current:,.0f}원")
-                c3.metric("손익", f"{total_pl:,.0f}원", f"{total_pl_pct:+.2f}%")
-
-            st.markdown("---")
-            st.markdown("### 📋 종목별")
-
-            for pos, eval_res in position_results:
-                pl_color = "🟢" if eval_res['손익률(%)'] >= 0 else "🔴"
-                with st.expander(f"{pl_color} {pos['종목명']} ({eval_res['손익률(%)']:+.2f}%)"):
-                    if is_mobile():
-                        st.metric("매수가", f"{eval_res['매수가']:,.0f}원")
-                        st.metric("현재가", f"{eval_res['현재가']:,.0f}원",
-                                  f"{eval_res['손익률(%)']:+.2f}%")
-                        st.metric("평가손익", f"{eval_res['총손익']:,.0f}원")
-                    else:
-                        c1, c2, c3 = st.columns(3)
-                        c1.metric("매수가", f"{eval_res['매수가']:,.0f}원")
-                        c2.metric("현재가", f"{eval_res['현재가']:,.0f}원",
-                                  f"{eval_res['손익률(%)']:+.2f}%")
-                        c3.metric("평가손익", f"{eval_res['총손익']:,.0f}원")
-
-                    st.caption(f"수량: {eval_res['수량']:,}주 | 매수일: {eval_res['매수일']}")
-
-                    if eval_res['추적손절가']:
-                        st.caption(f"📉 추적 손절가: **{eval_res['추적손절가']:,.0f}원**")
-
-                    for action in eval_res['액션']:
-                        if "🔴" in action:
-                            st.error(action)
-                        elif "⚠️" in action:
-                            st.warning(action)
-                        else:
-                            st.success(action)
-
-                    st.write(f"**사는 이유:** {pos.get('사는이유', '미입력')}")
-                    st.write(f"**팔 자리:** {pos.get('팔자리', '미입력')}")
-                    st.write(f"**최대 손실:** {pos.get('최대손실제한', '미입력')}")
-
-                    if st.button("💰 매도 처리", key=f"sell_{pos['id']}", use_container_width=True):
-                        remove_position(pos['id'])
-                        st.rerun()
-
-    with tab2:
-        st.markdown("### ➕ 매수 추가")
-        watchlist = load_watchlist()
-        all_stocks = {**DEFAULT_STOCKS, **watchlist}
-
-        with st.form("manual_add"):
-            stock_choice = st.selectbox("종목", ["직접 입력"] + list(all_stocks.keys()))
-            if stock_choice == "직접 입력":
-                name_input = st.text_input("종목명")
-                ticker_input = st.text_input("티커")
-                name = name_input
-                ticker = normalize_ticker(ticker_input) if ticker_input else ""
-            else:
-                name = stock_choice
-                ticker = all_stocks[stock_choice]
-
-            buy_price = st.number_input("매수가 (원)", min_value=0.0, step=100.0)
-            quantity = st.number_input("수량", min_value=1, value=10, step=1)
-            buy_date = st.date_input("매수일", value=datetime.now())
-
-            st.markdown("#### 📝 3줄 기록 (선택)")
-            reason = st.text_input("1️⃣ 사는 이유", "")
-            exit_  = st.text_input("2️⃣ 팔 자리", "")
-            loss   = st.text_input("3️⃣ 최대 손실", "")
-
-            if st.form_submit_button("💾 추가", type="primary", use_container_width=True):
-                if name and ticker and buy_price > 0:
-                    add_position(name=name, ticker=ticker,
-                                 buy_price=buy_price, quantity=quantity,
-                                 buy_date=buy_date.strftime('%Y-%m-%d'),
-                                 reason=reason, exit_condition=exit_, max_loss=loss)
-                    st.success(f"✅ {name} 추가됨")
-                    st.rerun()
-                else:
-                    st.warning("필수 정보 입력 필요")
-
-
-# ============================================================
-# [모드 6] 가이드
+# [모드 4] 가이드
 # ============================================================
 else:
     st.title("📖 테스타 매매법 가이드")
